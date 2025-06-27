@@ -34,39 +34,122 @@ def split_pfcand_by_fatjet(pfcand_array, pfcand_idx_array, fatjet_idx_array):
 
 class FatJetTauMatcher:
     
-    def __init__(self, dr_cut=0.8):
+    def __init__(self, dr_cut=0.8, verbose=False):
         self.dr_cut = dr_cut
+        self.verbose = verbose
     
-    def find_bsm_tau_gen_idx(self, genparts):
+
+    def tau_from_bsm_decay_with_chain(self, genparts, verbose=False):
+        if verbose:
+            print("DEBUG [tau_from_bsm_decay_with_chain]: Starting decay chain analysis")
+            print(f"DEBUG [tau_from_bsm_decay_with_chain]: Total genparts = {len(genparts)}")
+ 
         for i, p in enumerate(genparts):
             if abs(p.pdgId) != 15:
-                continue
-            
+                continue  # not a tau
+
+            if verbose:
+                print(f"DEBUG [tau_from_bsm_decay_with_chain]: Found tau at idx={i}, pdgId={p.pdgId}, pt={p.pt:.1f}")
+            chain = [p]
             idx = i
+            
+            if verbose:
+                print(f"DEBUG [tau_from_bsm_decay_with_chain]: Phase 1 - Searching for τ_R (9900016) from tau idx={i}")
+            phase1_steps = 0
+            
             while True:
                 mother_idx = genparts[idx].genPartIdxMother
+                if verbose:
+                    print(f"DEBUG [tau_from_bsm_decay_with_chain]:   Step {phase1_steps}: idx={idx} -> mother_idx={mother_idx}")
+                
                 if mother_idx < 0 or mother_idx == idx:
+                    if verbose:
+                        print(f"DEBUG [tau_from_bsm_decay_with_chain]:   Phase 1 terminated: invalid mother_idx={mother_idx}")
                     break
+                    
+                if mother_idx >= len(genparts):
+                    if verbose:
+                        print(f"DEBUG [tau_from_bsm_decay_with_chain]:   Phase 1 terminated: mother_idx={mother_idx} out of bounds")
+                    break
+                    
                 mother = genparts[mother_idx]
+                chain.append(mother)
+                if verbose:
+                    print(f"DEBUG [tau_from_bsm_decay_with_chain]:   Added to chain: idx={mother_idx}, pdgId={mother.pdgId}, pt={mother.pt:.1f}")
+                
                 if mother.pdgId == 9900016:
+                    if verbose:
+                        print(f"DEBUG [tau_from_bsm_decay_with_chain]:   Found τ_R at idx={mother_idx}! Moving to phase 2")
                     idx = mother_idx
                     break
+                    
                 idx = mother_idx
+                phase1_steps += 1
+                
+                if phase1_steps > 20:
+                    if verbose:
+                        print(f"DEBUG [tau_from_bsm_decay_with_chain]:   Phase 1 safety break: too many steps ({phase1_steps})")
+                    break
             else:
-                continue
+                if verbose:
+                    print(f"DEBUG [tau_from_bsm_decay_with_chain]: No τ_R found for tau {i}, skipping")
+                continue  # no 9900016 in chain
+ 
+            if verbose:
+                print(f"DEBUG [tau_from_bsm_decay_with_chain]: Phase 2 - Searching for W_R (±34) from τ_R idx={idx}")
+            phase2_steps = 0
             
             while True:
                 mother_idx = genparts[idx].genPartIdxMother
+                if verbose:
+                    print(f"DEBUG [tau_from_bsm_decay_with_chain]:   Step {phase2_steps}: idx={idx} -> mother_idx={mother_idx}")
+                
                 if mother_idx < 0 or mother_idx == idx:
+                    if verbose:
+                        print(f"DEBUG [tau_from_bsm_decay_with_chain]:   Phase 2 terminated: invalid mother_idx={mother_idx}")
                     break
+                    
+                if mother_idx >= len(genparts):
+                    if verbose:
+                        print(f"DEBUG [tau_from_bsm_decay_with_chain]:   Phase 2 terminated: mother_idx={mother_idx} out of bounds")
+                    break
+                    
                 mother = genparts[mother_idx]
+                if verbose:
+                    print(f"DEBUG [tau_from_bsm_decay_with_chain]:   Examining mother: idx={mother_idx}, pdgId={mother.pdgId}, pt={mother.pt:.1f}")
+                
                 if mother.pdgId != 9900016:
+                    chain.append(mother)
+                    if verbose:
+                        print(f"DEBUG [tau_from_bsm_decay_with_chain]:   Non-τ_R mother found: pdgId={mother.pdgId}")
                     if abs(mother.pdgId) == 34:
-                        return i
+                        if verbose:
+                            print(f"DEBUG [tau_from_bsm_decay_with_chain]:   SUCCESS! Found W_R at idx={mother_idx}")
+                            print(f"DEBUG [tau_from_bsm_decay_with_chain]:   Final chain length: {len(chain)}")
+                            for j, particle in enumerate(chain):
+                                print(f"DEBUG [tau_from_bsm_decay_with_chain]:     Chain[{j}]: pdgId={particle.pdgId}, pt={particle.pt:.1f}")
+                        return True, chain
+                    if verbose:
+                        print(f"DEBUG [tau_from_bsm_decay_with_chain]:   Not W_R, breaking from phase 2")
                     break
+                    
+                chain.append(mother)
+                if verbose:
+                    print(f"DEBUG [tau_from_bsm_decay_with_chain]:   Added τ_R to chain: idx={mother_idx}")
                 idx = mother_idx
-        
-        return None
+                phase2_steps += 1
+                
+                if phase2_steps > 20:
+                    if verbose:
+                        print(f"DEBUG [tau_from_bsm_decay_with_chain]:   Phase 2 safety break: too many steps ({phase2_steps})")
+                    break
+
+            if verbose:
+                print(f"DEBUG [tau_from_bsm_decay_with_chain]: FAILED to find complete BSM decay chain for tau {i}")
+                print(f"DEBUG [tau_from_bsm_decay_with_chain]: Partial chain length: {len(chain)}")
+                for j, particle in enumerate(chain):
+                    print(f"DEBUG [tau_from_bsm_decay_with_chain]:   Chain[{j}]: pdgId={particle.pdgId}, pt={particle.pt:.1f}")
+        return False, chain
     
     def match_tau_to_fatjet(self, event):
         matched_pairs = []
@@ -137,23 +220,22 @@ class FatJetTauMatcher:
             except KeyError:
                 genparts = None
         
-        bsm_tau_idx = None
-        if genparts is not None:
-            bsm_tau_idx = self.find_bsm_tau_gen_idx(genparts)
-        
         for tau_idx, tau in enumerate(taus):
             for fatjet_idx, fatjet in enumerate(fatjets):
                 dr = delta_r(tau.eta, tau.phi, fatjet.eta, fatjet.phi)
                 if dr < self.dr_cut:
+                    is_bsm_tau = False
+                    if genparts is not None and tau.genPartIdx >= 0 and tau.genPartIdx < len(genparts):
+                        is_bsm_tau, _ = self.tau_from_bsm_decay_with_chain(genparts, verbose=self.verbose)
+                    
+                    print(tau_idx, fatjet_idx, tau.genPartIdx, is_bsm_tau, dr)
                     matched_pairs.append({
                         'tau_idx': tau_idx,
                         'fatjet_idx': fatjet_idx,
                         'dr': dr,
                         'tau': tau,
                         'fatjet': fatjet,
-                        'is_bsm_tau': (bsm_tau_idx is not None and 
-                                     genparts is not None and 
-                                     tau.genPartIdx == bsm_tau_idx)
+                        'is_bsm_tau': is_bsm_tau
                     })
         
         return matched_pairs
@@ -235,8 +317,8 @@ class FatJetPFCandGraphBuilder:
 
 class SkimmedGraphBuilder:
     
-    def __init__(self, dr_cut: float = 0.8):
-        self.matcher = FatJetTauMatcher(dr_cut=dr_cut)
+    def __init__(self, dr_cut: float = 0.8, verbose: bool = False):
+        self.matcher = FatJetTauMatcher(dr_cut=dr_cut, verbose=verbose)
         self.graph_builder = FatJetPFCandGraphBuilder()
     
     def process_skim_file(self, skim_json_path: str, output_dir: str):
@@ -312,10 +394,12 @@ def main():
                        help="Output directory for graph files")
     parser.add_argument("--dr-cut", type=float, default=0.8,
                        help="Delta R cut for tau-fatjet matching")
+    parser.add_argument("--verbose", action="store_true",
+                       help="Enable verbose debug output")
     
     args = parser.parse_args()
     
-    builder = SkimmedGraphBuilder(dr_cut=args.dr_cut)
+    builder = SkimmedGraphBuilder(dr_cut=args.dr_cut, verbose=args.verbose)
     
     builder.process_multiple_skim_files(args.skim_files, args.output_dir)
 
